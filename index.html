@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Open Filter Studio</title>
+  <meta name="description" content="ログイン不要で使える、GitHub Pages対応の画像フィルター実験アプリ" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div>
+        <h1>Open Filter Studio</h1>
+        <p class="subtitle">権利的に安全な自前実装だけで構成した、GitHub Pages対応の画像フィルター実験アプリ</p>
+      </div>
+      <div class="topbar-actions">
+        <button id="loadSampleBtn" class="secondary">サンプル画像</button>
+        <label class="button-like">
+          画像を開く
+          <input id="fileInput" type="file" accept="image/*" hidden />
+        </label>
+        <button id="resetStackBtn" class="secondary">フィルターを空にする</button>
+        <button id="exportPngBtn">PNG書き出し</button>
+        <button id="exportJpegBtn">JPEG書き出し</button>
+      </div>
+    </header>
+
+    <section class="toolbar card">
+      <div class="toolbar-group">
+        <label class="field-label" for="previewQualitySelect">プレビュー品質</label>
+        <select id="previewQualitySelect">
+          <option value="1">100%</option>
+          <option value="0.75">75%</option>
+          <option value="0.5">50%</option>
+          <option value="0.25">25%</option>
+        </select>
+      </div>
+      <div class="toolbar-group toggle-row">
+        <label>
+          <input id="compareToggle" type="checkbox" />
+          比較表示
+        </label>
+        <label>
+          分割位置
+          <input id="compareSlider" type="range" min="0" max="100" value="50" />
+        </label>
+      </div>
+      <div class="toolbar-group status-group">
+        <div id="imageInfo">画像未読み込み</div>
+        <div id="statusText">サンプル画像を読み込むか、画像をドロップしてください。</div>
+      </div>
+    </section>
+
+    <main class="workspace">
+      <aside class="sidebar card left-sidebar">
+        <section>
+          <h2>プリセット</h2>
+          <div id="presetList" class="preset-list"></div>
+        </section>
+        <section>
+          <h2>フィルターを追加</h2>
+          <label class="field-label" for="filterSelect">フィルター</label>
+          <select id="filterSelect"></select>
+          <button id="addFilterBtn" class="wide">追加</button>
+          <p class="muted">補正・ぼかし・効果・変形をまとめて収録しています。</p>
+        </section>
+        <section>
+          <h2>使い方</h2>
+          <ol class="help-list">
+            <li>画像を読み込みます。</li>
+            <li>左でフィルターを追加します。</li>
+            <li>右で順序とパラメータを調整します。</li>
+            <li>比較表示で元画像との差を確認します。</li>
+            <li>PNG または JPEG で書き出します。</li>
+          </ol>
+        </section>
+      </aside>
+
+      <section class="preview-panel card">
+        <div id="dropZone" class="drop-zone">
+          <div class="drop-zone-inner">
+            <strong>ここへ画像をドロップ</strong>
+            <span>ペーストにも対応</span>
+          </div>
+        </div>
+        <div class="preview-header">
+          <h2>プレビュー</h2>
+          <div id="filterCountBadge" class="badge">0 filters</div>
+        </div>
+        <div class="canvas-wrap">
+          <canvas id="previewCanvas"></canvas>
+        </div>
+      </section>
+
+      <aside class="sidebar card right-sidebar">
+        <div class="stack-header-row">
+          <h2>フィルタースタック</h2>
+          <button id="clearStackBtn" class="secondary small">全部削除</button>
+        </div>
+        <div id="stackList" class="stack-list"></div>
+      </aside>
+    </main>
+
+    <footer class="footer card">
+      <p>
+        このプロジェクトは特定製品のコード・素材・UI を流用せず、一般的な画像処理アルゴリズムを独自実装したサンプルです。
+      </p>
+    </footer>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
