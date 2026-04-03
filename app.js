@@ -5,7 +5,9 @@
 
   const els = {
     fileInput: $('#fileInput'),
+    addImageInput: $('#addImageInput'),
     loadSampleBtn: $('#loadSampleBtn'),
+    addDrawingLayerBtn: $('#addDrawingLayerBtn'),
     resetStackBtn: $('#resetStackBtn'),
     exportPngBtn: $('#exportPngBtn'),
     exportJpegBtn: $('#exportJpegBtn'),
@@ -21,7 +23,16 @@
     dropZone: $('#dropZone'),
     stackList: $('#stackList'),
     clearStackBtn: $('#clearStackBtn'),
-    filterCountBadge: $('#filterCountBadge')
+    filterCountBadge: $('#filterCountBadge'),
+    layerList: $('#layerList'),
+    selectToolBtn: $('#selectToolBtn'),
+    brushToolBtn: $('#brushToolBtn'),
+    eraserToolBtn: $('#eraserToolBtn'),
+    brushColorInput: $('#brushColorInput'),
+    brushSizeInput: $('#brushSizeInput'),
+    brushOpacityInput: $('#brushOpacityInput'),
+    brushSizeValue: $('#brushSizeValue'),
+    brushOpacityValue: $('#brushOpacityValue')
   };
 
   const previewCtx = els.previewCanvas.getContext('2d', { willReadFrequently: true });
@@ -39,12 +50,35 @@
     previewProcessedCanvas: document.createElement('canvas'),
     previewProcessedCtx: null,
     previewQuality: 1,
+    previewScale: 1,
     compareEnabled: false,
     compareSplit: 0.5,
     rendering: false,
     renderAgain: false,
     renderToken: 0,
-    currentStatus: 'サンプル画像を読み込むか、画像をドロップしてください。'
+    currentStatus: 'サンプル画像を読み込むか、画像をドロップしてください。',
+    sceneWidth: 0,
+    sceneHeight: 0,
+    layers: [],
+    selectedLayerId: null,
+    activeTool: 'select',
+    brushColor: '#ff2d55',
+    brushSize: 28,
+    brushOpacity: 0.85,
+    pointerState: {
+      down: false,
+      mode: null,
+      layerId: null,
+      pointerId: null,
+      startSceneX: 0,
+      startSceneY: 0,
+      originX: 0,
+      originY: 0,
+      lastSceneX: 0,
+      lastSceneY: 0
+    },
+    hoverSceneX: null,
+    hoverSceneY: null
   };
 
   state.sourceCtx = state.sourceCanvas.getContext('2d', { willReadFrequently: true });
@@ -61,6 +95,119 @@
   const nextFrame = () => new Promise((resolve) => requestAnimationFrame(resolve));
   const uid = () => `f_${Math.random().toString(36).slice(2, 10)}_${Date.now().toString(36)}`;
 
+  const degToRad = (value) => value * Math.PI / 180;
+
+  function getSceneWidth() {
+    return state.sceneWidth || state.sourceCanvas.width || 1;
+  }
+
+  function getSceneHeight() {
+    return state.sceneHeight || state.sourceCanvas.height || 1;
+  }
+
+  function getLayerById(id) {
+    return state.layers.find((layer) => layer.id === id);
+  }
+
+  function getSelectedLayer() {
+    return getLayerById(state.selectedLayerId);
+  }
+
+  function computeContainScale(width, height, sceneWidth = getSceneWidth(), sceneHeight = getSceneHeight(), fill = 0.72) {
+    if (!width || !height || !sceneWidth || !sceneHeight) return 1;
+    return Math.min(1, Math.min((sceneWidth * fill) / width, (sceneHeight * fill) / height));
+  }
+
+  function makeCanvas(width, height) {
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(width));
+    canvas.height = Math.max(1, Math.round(height));
+    return canvas;
+  }
+
+  function canvasFromImageElement(image) {
+    const canvas = makeCanvas(image.naturalWidth || image.width, image.naturalHeight || image.height);
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(image, 0, 0);
+    return canvas;
+  }
+
+  function createImageLayer(canvas, name, options = {}) {
+    const sceneWidth = options.sceneWidth || getSceneWidth() || canvas.width;
+    const sceneHeight = options.sceneHeight || getSceneHeight() || canvas.height;
+    const defaultScale = options.fillScene ? 1 : computeContainScale(canvas.width, canvas.height, sceneWidth, sceneHeight);
+    const scale = options.scale !== undefined ? options.scale : defaultScale;
+    const offset = options.offset || 0;
+    return {
+      id: uid(),
+      type: 'image',
+      name: name || `画像 ${state.layers.filter((layer) => layer.type === 'image').length + 1}`,
+      visible: true,
+      opacity: options.opacity !== undefined ? options.opacity : 1,
+      x: options.x !== undefined ? options.x : sceneWidth / 2 + offset,
+      y: options.y !== undefined ? options.y : sceneHeight / 2 + offset,
+      scale,
+      rotation: options.rotation || 0,
+      canvas,
+      width: canvas.width,
+      height: canvas.height
+    };
+  }
+
+  function createDrawingLayer(name) {
+    const canvas = makeCanvas(getSceneWidth() || 1280, getSceneHeight() || 800);
+    return {
+      id: uid(),
+      type: 'drawing',
+      name: name || `お絵かき ${state.layers.filter((layer) => layer.type === 'drawing').length + 1}`,
+      visible: true,
+      opacity: 1,
+      x: getSceneWidth() / 2,
+      y: getSceneHeight() / 2,
+      scale: 1,
+      rotation: 0,
+      canvas,
+      width: canvas.width,
+      height: canvas.height
+    };
+  }
+
+  function updateEditorCursor() {
+    if (!els.previewCanvas) return;
+    if (state.activeTool === 'select') {
+      els.previewCanvas.style.cursor = state.pointerState.down && state.pointerState.mode === 'move' ? 'grabbing' : 'grab';
+      return;
+    }
+    els.previewCanvas.style.cursor = 'crosshair';
+  }
+
+  function updateBrushInfo() {
+    if (els.brushSizeInput) els.brushSizeInput.value = state.brushSize;
+    if (els.brushOpacityInput) els.brushOpacityInput.value = state.brushOpacity;
+    if (els.brushColorInput) els.brushColorInput.value = state.brushColor;
+    if (els.brushSizeValue) els.brushSizeValue.textContent = `${Math.round(state.brushSize)} px`;
+    if (els.brushOpacityValue) els.brushOpacityValue.textContent = `${Math.round(state.brushOpacity * 100)}%`;
+  }
+
+  function setActiveTool(tool) {
+    state.activeTool = tool;
+    if (els.selectToolBtn) els.selectToolBtn.classList.toggle('active', tool === 'select');
+    if (els.brushToolBtn) els.brushToolBtn.classList.toggle('active', tool === 'brush');
+    if (els.eraserToolBtn) els.eraserToolBtn.classList.toggle('active', tool === 'eraser');
+    if ((tool === 'brush' || tool === 'eraser') && (!getSelectedLayer() || getSelectedLayer().type !== 'drawing')) {
+      ensureActiveDrawingLayer();
+    }
+    updateEditorCursor();
+    drawVisiblePreview();
+  }
+
+  function setSelectedLayer(id, options = {}) {
+    if (id && !getLayerById(id)) return;
+    state.selectedLayerId = id;
+    if (!options.skipLayerRender) renderLayerList();
+    if (!options.skipPreviewDraw) drawVisiblePreview();
+  }
+
   function setStatus(text) {
     state.currentStatus = text;
     els.statusText.textContent = text;
@@ -72,13 +219,13 @@
   }
 
   function updateImageInfo() {
-    if (!state.fullOriginal) {
+    if (!state.sceneWidth || !state.sceneHeight) {
       els.imageInfo.textContent = '画像未読み込み';
       return;
     }
-    const full = `${state.fullOriginal.width}×${state.fullOriginal.height}`;
-    const preview = `${state.previewOriginal.width}×${state.previewOriginal.height}`;
-    els.imageInfo.textContent = `${state.imageName} / 原寸 ${full} / プレビュー ${preview}`;
+    const full = `${state.sceneWidth}×${state.sceneHeight}`;
+    const preview = state.previewOriginal ? `${state.previewOriginal.width}×${state.previewOriginal.height}` : '未生成';
+    els.imageInfo.textContent = `${state.imageName} / 原寸 ${full} / プレビュー ${preview} / レイヤー ${state.layers.length}`;
   }
 
   function updateFilterCountBadge() {
@@ -2367,6 +2514,494 @@
     });
   }
 
+
+  function createLayerRangeControl(label, value, config, onChange) {
+    const row = document.createElement('div');
+    row.className = 'param-row';
+
+    const head = document.createElement('div');
+    head.className = 'param-head';
+    const valueEl = document.createElement('span');
+    valueEl.className = 'param-value';
+    valueEl.textContent = formatNumber(value, config.digits ?? 2);
+    head.append(document.createElement('span'), valueEl);
+    head.firstChild.textContent = label;
+    row.appendChild(head);
+
+    const wrap = document.createElement('div');
+    wrap.className = 'range-pair';
+    const range = document.createElement('input');
+    range.type = 'range';
+    range.min = config.min;
+    range.max = config.max;
+    range.step = config.step;
+    range.value = value;
+
+    const number = document.createElement('input');
+    number.type = 'number';
+    number.min = config.min;
+    number.max = config.max;
+    number.step = config.step;
+    number.value = value;
+
+    const sync = (raw) => {
+      const numeric = parseFloat(raw);
+      const safe = Number.isNaN(numeric) ? value : Math.min(config.max, Math.max(config.min, numeric));
+      range.value = safe;
+      number.value = safe;
+      valueEl.textContent = formatNumber(safe, config.digits ?? 2);
+      onChange(safe);
+    };
+
+    range.addEventListener('input', (event) => sync(event.target.value));
+    number.addEventListener('input', (event) => sync(event.target.value));
+    wrap.append(range, number);
+    row.appendChild(wrap);
+    return row;
+  }
+
+  function createLayerActionRow(buttons) {
+    const row = document.createElement('div');
+    row.className = 'layer-action-row';
+    buttons.forEach((button) => row.appendChild(button));
+    return row;
+  }
+
+  function composeSceneToSourceCanvas(options = {}) {
+    if (!state.sceneWidth || !state.sceneHeight) return;
+    state.sourceCanvas.width = state.sceneWidth;
+    state.sourceCanvas.height = state.sceneHeight;
+    state.sourceCtx.clearRect(0, 0, state.sceneWidth, state.sceneHeight);
+
+    state.layers.forEach((layer) => {
+      if (!layer.visible || layer.opacity <= 0) return;
+      state.sourceCtx.save();
+      state.sourceCtx.globalAlpha = layer.opacity;
+      state.sourceCtx.translate(layer.x, layer.y);
+      state.sourceCtx.rotate(degToRad(layer.rotation || 0));
+      state.sourceCtx.scale(layer.scale || 1, layer.scale || 1);
+      state.sourceCtx.drawImage(layer.canvas, -layer.width / 2, -layer.height / 2);
+      state.sourceCtx.restore();
+    });
+
+    if (options.readFull !== false) {
+      state.fullOriginal = state.sourceCtx.getImageData(0, 0, state.sceneWidth, state.sceneHeight);
+    }
+  }
+
+  function refreshScene(options = {}) {
+    if (!state.sceneWidth || !state.sceneHeight) return;
+    composeSceneToSourceCanvas({ readFull: options.interactive ? false : options.readFull });
+    rebuildPreviewFromSource();
+    state.previewProcessed = cloneImageData(state.previewOriginal);
+    drawVisiblePreview();
+    updateImageInfo();
+    if (!options.skipRender) {
+      scheduleRender(options.interactive ? 120 : 30);
+    }
+    if (!options.skipLayerRender) {
+      renderLayerList();
+    }
+  }
+
+  function addDrawingLayer(options = {}) {
+    if (!state.sceneWidth || !state.sceneHeight) {
+      state.sceneWidth = 1280;
+      state.sceneHeight = 800;
+    }
+    const layer = createDrawingLayer(options.name);
+    state.layers.push(layer);
+    state.selectedLayerId = layer.id;
+    refreshScene({ skipRender: false });
+    setStatus(`描画レイヤー「${layer.name}」を追加しました。`);
+    return layer;
+  }
+
+  function ensureActiveDrawingLayer() {
+    let layer = getSelectedLayer();
+    if (layer && layer.type === 'drawing') return layer;
+    layer = [...state.layers].reverse().find((entry) => entry.type === 'drawing');
+    if (!layer) {
+      layer = addDrawingLayer({ name: `お絵かき ${state.layers.filter((entry) => entry.type === 'drawing').length + 1}` });
+    } else {
+      setSelectedLayer(layer.id, { skipPreviewDraw: true });
+      drawVisiblePreview();
+    }
+    return layer;
+  }
+
+  function moveLayerOrder(id, direction) {
+    const index = state.layers.findIndex((layer) => layer.id === id);
+    if (index < 0) return;
+    const swapIndex = index + direction;
+    if (swapIndex < 0 || swapIndex >= state.layers.length) return;
+    const temp = state.layers[index];
+    state.layers[index] = state.layers[swapIndex];
+    state.layers[swapIndex] = temp;
+    refreshScene({ skipRender: false });
+  }
+
+  function removeLayer(id) {
+    if (state.layers.length <= 1) return;
+    const index = state.layers.findIndex((layer) => layer.id === id);
+    if (index < 0) return;
+    state.layers.splice(index, 1);
+    if (state.selectedLayerId === id) {
+      const fallback = state.layers[Math.min(index, state.layers.length - 1)] || state.layers[state.layers.length - 1] || null;
+      state.selectedLayerId = fallback ? fallback.id : null;
+    }
+    refreshScene({ skipRender: false });
+  }
+
+  function toggleLayerVisibility(id, visible) {
+    const layer = getLayerById(id);
+    if (!layer) return;
+    layer.visible = visible;
+    refreshScene({ skipRender: false });
+  }
+
+  function updateLayerProp(id, key, value, options = {}) {
+    const layer = getLayerById(id);
+    if (!layer) return;
+    layer[key] = value;
+    refreshScene({ interactive: options.interactive, skipLayerRender: options.skipLayerRender });
+  }
+
+  function centerLayer(id) {
+    const layer = getLayerById(id);
+    if (!layer) return;
+    layer.x = getSceneWidth() / 2;
+    layer.y = getSceneHeight() / 2;
+    refreshScene({ skipRender: false });
+  }
+
+  function fitLayerToScene(id) {
+    const layer = getLayerById(id);
+    if (!layer || layer.type !== 'image') return;
+    layer.scale = computeContainScale(layer.width, layer.height);
+    centerLayer(id);
+  }
+
+  function clearDrawingLayer(id) {
+    const layer = getLayerById(id);
+    if (!layer || layer.type !== 'drawing') return;
+    const ctx = layer.canvas.getContext('2d', { willReadFrequently: true });
+    ctx.clearRect(0, 0, layer.canvas.width, layer.canvas.height);
+    refreshScene({ skipRender: false });
+  }
+
+  function renderLayerList() {
+    if (!els.layerList) return;
+    els.layerList.innerHTML = '';
+
+    if (!state.layers.length) {
+      const empty = document.createElement('div');
+      empty.className = 'empty-stack';
+      empty.textContent = 'まだレイヤーがありません。画像やお絵かきレイヤーを追加してください。';
+      els.layerList.appendChild(empty);
+      return;
+    }
+
+    [...state.layers].reverse().forEach((layer, displayIndex) => {
+      const actualIndex = state.layers.length - 1 - displayIndex;
+      const card = document.createElement('div');
+      card.className = `layer-card ${state.selectedLayerId === layer.id ? 'selected' : ''}`.trim();
+
+      const header = document.createElement('div');
+      header.className = 'layer-header';
+      header.addEventListener('click', () => setSelectedLayer(layer.id));
+
+      const titleWrap = document.createElement('div');
+      titleWrap.className = 'stack-item-title';
+      const visibility = document.createElement('label');
+      visibility.className = 'checkbox-row';
+      visibility.addEventListener('click', (event) => event.stopPropagation());
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.checked = layer.visible;
+      checkbox.addEventListener('change', (event) => toggleLayerVisibility(layer.id, event.target.checked));
+      visibility.append(checkbox, document.createTextNode(layer.name));
+      const meta = document.createElement('span');
+      meta.className = 'stack-item-meta';
+      meta.textContent = `${layer.type === 'image' ? '画像' : '描画'} / ${layer.width}×${layer.height}`;
+      titleWrap.append(visibility, meta);
+
+      const actions = document.createElement('div');
+      actions.className = 'layer-actions';
+      const frontBtn = document.createElement('button');
+      frontBtn.className = 'secondary small';
+      frontBtn.textContent = '前面';
+      frontBtn.disabled = actualIndex === state.layers.length - 1;
+      frontBtn.addEventListener('click', (event) => {
+        event.stopPropagation();
+        moveLayerOrder(layer.id, 1);
+      });
+      const backBtn = document.createElement('button');
+      backBtn.className = 'secondary small';
+      backBtn.textContent = '背面';
+      backBtn.disabled = actualIndex === 0;
+      backBtn.addEventListener('click', (event) => {
+        event.stopPropagation();
+        moveLayerOrder(layer.id, -1);
+      });
+      const removeBtn = document.createElement('button');
+      removeBtn.className = 'secondary danger small';
+      removeBtn.textContent = '削除';
+      removeBtn.disabled = state.layers.length <= 1;
+      removeBtn.addEventListener('click', (event) => {
+        event.stopPropagation();
+        removeLayer(layer.id);
+      });
+      actions.append(frontBtn, backBtn, removeBtn);
+
+      header.append(titleWrap, actions);
+      card.appendChild(header);
+
+      if (state.selectedLayerId === layer.id) {
+        const grid = document.createElement('div');
+        grid.className = 'param-grid';
+        grid.appendChild(createLayerRangeControl('不透明度', layer.opacity, { min: 0, max: 1, step: 0.01, digits: 2 }, (value) => updateLayerProp(layer.id, 'opacity', value)));
+
+        if (layer.type === 'image') {
+          grid.appendChild(createLayerRangeControl('X', layer.x, { min: -layer.width, max: getSceneWidth() + layer.width, step: 1, digits: 0 }, (value) => updateLayerProp(layer.id, 'x', value)));
+          grid.appendChild(createLayerRangeControl('Y', layer.y, { min: -layer.height, max: getSceneHeight() + layer.height, step: 1, digits: 0 }, (value) => updateLayerProp(layer.id, 'y', value)));
+          grid.appendChild(createLayerRangeControl('拡大率', layer.scale, { min: 0.05, max: 4, step: 0.01, digits: 2 }, (value) => updateLayerProp(layer.id, 'scale', value)));
+          grid.appendChild(createLayerRangeControl('回転', layer.rotation, { min: -180, max: 180, step: 1, digits: 0 }, (value) => updateLayerProp(layer.id, 'rotation', value)));
+
+          const centerBtn = document.createElement('button');
+          centerBtn.className = 'secondary small';
+          centerBtn.textContent = '中央へ';
+          centerBtn.addEventListener('click', () => centerLayer(layer.id));
+          const fitBtn = document.createElement('button');
+          fitBtn.className = 'secondary small';
+          fitBtn.textContent = '画面内に収める';
+          fitBtn.addEventListener('click', () => fitLayerToScene(layer.id));
+          grid.appendChild(createLayerActionRow([centerBtn, fitBtn]));
+        }
+
+        if (layer.type === 'drawing') {
+          const clearBtn = document.createElement('button');
+          clearBtn.className = 'secondary small';
+          clearBtn.textContent = '描画を消去';
+          clearBtn.addEventListener('click', () => clearDrawingLayer(layer.id));
+          grid.appendChild(createLayerActionRow([clearBtn]));
+        }
+
+        card.appendChild(grid);
+      }
+
+      els.layerList.appendChild(card);
+    });
+  }
+
+  function getLayerPreviewCorners(layer) {
+    const hw = (layer.width * (layer.scale || 1)) / 2;
+    const hh = (layer.height * (layer.scale || 1)) / 2;
+    const rad = degToRad(layer.rotation || 0);
+    const cos = Math.cos(rad);
+    const sin = Math.sin(rad);
+    const points = [
+      { x: -hw, y: -hh },
+      { x: hw, y: -hh },
+      { x: hw, y: hh },
+      { x: -hw, y: hh }
+    ];
+    return points.map((point) => ({
+      x: (layer.x + point.x * cos - point.y * sin) * state.previewScale,
+      y: (layer.y + point.x * sin + point.y * cos) * state.previewScale
+    }));
+  }
+
+  function drawEditorOverlay() {
+    const selected = getSelectedLayer();
+    if (selected && state.previewScale) {
+      const points = getLayerPreviewCorners(selected);
+      previewCtx.save();
+      previewCtx.strokeStyle = 'rgba(80, 200, 255, 0.95)';
+      previewCtx.fillStyle = 'rgba(80, 200, 255, 0.95)';
+      previewCtx.lineWidth = 2;
+      previewCtx.setLineDash([10, 6]);
+      previewCtx.beginPath();
+      previewCtx.moveTo(points[0].x, points[0].y);
+      for (let i = 1; i < points.length; i += 1) {
+        previewCtx.lineTo(points[i].x, points[i].y);
+      }
+      previewCtx.closePath();
+      previewCtx.stroke();
+      previewCtx.setLineDash([]);
+      points.forEach((point) => previewCtx.fillRect(point.x - 3, point.y - 3, 6, 6));
+      previewCtx.restore();
+    }
+
+    if ((state.activeTool === 'brush' || state.activeTool === 'eraser') && state.hoverSceneX !== null && state.hoverSceneY !== null) {
+      previewCtx.save();
+      previewCtx.strokeStyle = state.activeTool === 'eraser' ? 'rgba(255, 255, 255, 0.95)' : 'rgba(255, 120, 160, 0.95)';
+      previewCtx.lineWidth = 1.5;
+      previewCtx.beginPath();
+      previewCtx.arc(state.hoverSceneX * state.previewScale, state.hoverSceneY * state.previewScale, (state.brushSize / 2) * state.previewScale, 0, Math.PI * 2);
+      previewCtx.stroke();
+      previewCtx.restore();
+    }
+  }
+
+  function previewEventToScene(event) {
+    const rect = els.previewCanvas.getBoundingClientRect();
+    const previewX = (event.clientX - rect.left) * (els.previewCanvas.width / Math.max(rect.width, 1));
+    const previewY = (event.clientY - rect.top) * (els.previewCanvas.height / Math.max(rect.height, 1));
+    return {
+      previewX,
+      previewY,
+      sceneX: previewX / Math.max(state.previewScale, 0.0001),
+      sceneY: previewY / Math.max(state.previewScale, 0.0001)
+    };
+  }
+
+  function pointToLayerLocal(layer, sceneX, sceneY) {
+    const dx = sceneX - layer.x;
+    const dy = sceneY - layer.y;
+    const rad = -degToRad(layer.rotation || 0);
+    const cos = Math.cos(rad);
+    const sin = Math.sin(rad);
+    const scale = layer.scale || 1;
+    const rotatedX = (dx * cos - dy * sin) / scale;
+    const rotatedY = (dx * sin + dy * cos) / scale;
+    return {
+      x: rotatedX + layer.width / 2,
+      y: rotatedY + layer.height / 2
+    };
+  }
+
+  function hitTestLayer(layer, sceneX, sceneY) {
+    if (!layer.visible || layer.opacity <= 0 || layer.type !== 'image') return false;
+    const local = pointToLayerLocal(layer, sceneX, sceneY);
+    if (local.x < 0 || local.y < 0 || local.x >= layer.width || local.y >= layer.height) return false;
+    const ctx = layer.canvas.getContext('2d', { willReadFrequently: true });
+    const pixel = ctx.getImageData(Math.floor(local.x), Math.floor(local.y), 1, 1).data;
+    return pixel[3] > 10;
+  }
+
+  function findTopmostImageLayer(sceneX, sceneY) {
+    for (let i = state.layers.length - 1; i >= 0; i -= 1) {
+      const layer = state.layers[i];
+      if (hitTestLayer(layer, sceneX, sceneY)) return layer;
+    }
+    return null;
+  }
+
+  function paintToLayer(layer, fromX, fromY, toX, toY) {
+    const ctx = layer.canvas.getContext('2d', { willReadFrequently: true });
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.lineWidth = state.brushSize;
+    ctx.globalAlpha = state.brushOpacity;
+    if (state.activeTool === 'eraser') {
+      ctx.globalCompositeOperation = 'destination-out';
+      ctx.strokeStyle = 'rgba(0,0,0,1)';
+      ctx.fillStyle = 'rgba(0,0,0,1)';
+    } else {
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.strokeStyle = state.brushColor;
+      ctx.fillStyle = state.brushColor;
+    }
+
+    if (Math.hypot(toX - fromX, toY - fromY) < 0.5) {
+      ctx.beginPath();
+      ctx.arc(toX, toY, state.brushSize / 2, 0, Math.PI * 2);
+      ctx.fill();
+    } else {
+      ctx.beginPath();
+      ctx.moveTo(fromX, fromY);
+      ctx.lineTo(toX, toY);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  function handleCanvasPointerDown(event) {
+    if (!state.previewOriginal) return;
+    const pos = previewEventToScene(event);
+    state.hoverSceneX = pos.sceneX;
+    state.hoverSceneY = pos.sceneY;
+    updateEditorCursor();
+
+    if (state.activeTool === 'select') {
+      const hitLayer = findTopmostImageLayer(pos.sceneX, pos.sceneY);
+      if (hitLayer) {
+        setSelectedLayer(hitLayer.id);
+        state.pointerState.down = true;
+        state.pointerState.mode = 'move';
+        state.pointerState.layerId = hitLayer.id;
+        state.pointerState.pointerId = event.pointerId;
+        state.pointerState.startSceneX = pos.sceneX;
+        state.pointerState.startSceneY = pos.sceneY;
+        state.pointerState.originX = hitLayer.x;
+        state.pointerState.originY = hitLayer.y;
+        els.previewCanvas.setPointerCapture(event.pointerId);
+        drawVisiblePreview();
+      }
+      return;
+    }
+
+    const layer = ensureActiveDrawingLayer();
+    setSelectedLayer(layer.id, { skipPreviewDraw: true });
+    state.pointerState.down = true;
+    state.pointerState.mode = 'paint';
+    state.pointerState.layerId = layer.id;
+    state.pointerState.pointerId = event.pointerId;
+    state.pointerState.lastSceneX = pos.sceneX;
+    state.pointerState.lastSceneY = pos.sceneY;
+    paintToLayer(layer, pos.sceneX, pos.sceneY, pos.sceneX, pos.sceneY);
+    refreshScene({ interactive: true, skipLayerRender: true });
+    els.previewCanvas.setPointerCapture(event.pointerId);
+  }
+
+  function handleCanvasPointerMove(event) {
+    if (!state.previewOriginal) return;
+    const pos = previewEventToScene(event);
+    state.hoverSceneX = pos.sceneX;
+    state.hoverSceneY = pos.sceneY;
+
+    if (!state.pointerState.down) {
+      drawVisiblePreview();
+      return;
+    }
+
+    if (state.pointerState.mode === 'move') {
+      const layer = getLayerById(state.pointerState.layerId);
+      if (!layer) return;
+      layer.x = state.pointerState.originX + (pos.sceneX - state.pointerState.startSceneX);
+      layer.y = state.pointerState.originY + (pos.sceneY - state.pointerState.startSceneY);
+      refreshScene({ interactive: true, skipLayerRender: true });
+      return;
+    }
+
+    if (state.pointerState.mode === 'paint') {
+      const layer = getLayerById(state.pointerState.layerId);
+      if (!layer) return;
+      paintToLayer(layer, state.pointerState.lastSceneX, state.pointerState.lastSceneY, pos.sceneX, pos.sceneY);
+      state.pointerState.lastSceneX = pos.sceneX;
+      state.pointerState.lastSceneY = pos.sceneY;
+      refreshScene({ interactive: true, skipLayerRender: true });
+    }
+  }
+
+  function finishCanvasInteraction() {
+    if (!state.pointerState.down) return;
+    state.pointerState.down = false;
+    state.pointerState.mode = null;
+    state.pointerState.layerId = null;
+    state.pointerState.pointerId = null;
+    refreshScene({ skipRender: false });
+    updateEditorCursor();
+  }
+
+  function handleCanvasPointerLeave() {
+    state.hoverSceneX = null;
+    state.hoverSceneY = null;
+    drawVisiblePreview();
+  }
+
   function updatePreviewCanvasSize(width, height) {
     els.previewCanvas.width = width;
     els.previewCanvas.height = height;
@@ -2379,11 +3014,12 @@
   }
 
   function rebuildPreviewFromSource() {
-    if (!state.fullOriginal) return;
+    if (!state.sceneWidth || !state.sceneHeight) return;
     const maxEdge = 1400 * state.previewQuality;
     const scale = Math.min(1, maxEdge / Math.max(state.sourceCanvas.width, state.sourceCanvas.height));
     const width = Math.max(1, Math.round(state.sourceCanvas.width * scale));
     const height = Math.max(1, Math.round(state.sourceCanvas.height * scale));
+    state.previewScale = scale;
     state.previewOriginalCanvas.width = width;
     state.previewOriginalCanvas.height = height;
     state.previewOriginalCtx.clearRect(0, 0, width, height);
@@ -2413,10 +3049,12 @@
       previewCtx.lineTo(split + 0.5, height);
       previewCtx.stroke();
       previewCtx.restore();
+      drawEditorOverlay();
       return;
     }
 
     previewCtx.putImageData(state.previewProcessed, 0, 0);
+    drawEditorOverlay();
   }
 
   async function applyStack(imageData, options = {}) {
@@ -2435,7 +3073,7 @@
     return working;
   }
 
-  function scheduleRender() {
+  function scheduleRender(delay = 30) {
     state.renderToken += 1;
     if (state.rendering) {
       state.renderAgain = true;
@@ -2447,7 +3085,7 @@
         console.error(error);
         setStatus(`エラー: ${error.message}`);
       });
-    }, 30);
+    }, delay);
   }
 
   async function renderPreview() {
@@ -2474,6 +3112,8 @@
   }
 
   async function exportImage(type) {
+    if (!state.sceneWidth || !state.sceneHeight) return;
+    composeSceneToSourceCanvas({ readFull: true });
     if (!state.fullOriginal) return;
     setStatus(`高解像度の ${type === 'image/png' ? 'PNG' : 'JPEG'} を書き出し中...`);
     await nextFrame();
@@ -2517,20 +3157,26 @@
 
   function loadFromCanvas(canvas, name = 'sample') {
     state.imageName = name;
-    state.sourceCanvas.width = canvas.width;
-    state.sourceCanvas.height = canvas.height;
-    state.sourceCtx.clearRect(0, 0, canvas.width, canvas.height);
-    state.sourceCtx.drawImage(canvas, 0, 0);
-    state.fullOriginal = state.sourceCtx.getImageData(0, 0, canvas.width, canvas.height);
-    rebuildPreviewFromSource();
-    state.previewProcessed = cloneImageData(state.previewOriginal);
-    drawVisiblePreview();
-    updateImageInfo();
-    scheduleRender();
+    state.sceneWidth = canvas.width;
+    state.sceneHeight = canvas.height;
+    const baseLayer = createImageLayer(canvas, name, {
+      sceneWidth: canvas.width,
+      sceneHeight: canvas.height,
+      fillScene: true,
+      x: canvas.width / 2,
+      y: canvas.height / 2,
+      scale: 1,
+      rotation: 0
+    });
+    const drawingLayer = createDrawingLayer('お絵かき 1');
+    state.layers = [baseLayer, drawingLayer];
+    state.selectedLayerId = drawingLayer.id;
+    refreshScene({ skipRender: false });
+    setActiveTool(state.activeTool);
   }
 
-  async function loadImageFile(file) {
-    if (!file) return;
+  async function readImageFileToCanvas(file) {
+    if (!file) return null;
     const imageUrl = URL.createObjectURL(file);
     try {
       const image = await new Promise((resolve, reject) => {
@@ -2539,15 +3185,41 @@
         img.onerror = () => reject(new Error('画像を読み込めませんでした。'));
         img.src = imageUrl;
       });
-      const canvas = document.createElement('canvas');
-      canvas.width = image.naturalWidth;
-      canvas.height = image.naturalHeight;
-      const ctx = canvas.getContext('2d', { willReadFrequently: true });
-      ctx.drawImage(image, 0, 0);
-      loadFromCanvas(canvas, file.name);
-      setStatus(`「${file.name}」を読み込みました。`);
+      return canvasFromImageElement(image);
     } finally {
       URL.revokeObjectURL(imageUrl);
+    }
+  }
+
+  async function loadImageFile(file, mode = 'replace') {
+    if (!file) return;
+    const canvas = await readImageFileToCanvas(file);
+    if (!canvas) return;
+
+    if (mode === 'add' && state.sceneWidth && state.sceneHeight) {
+      const imageLayers = state.layers.filter((layer) => layer.type === 'image');
+      const offset = imageLayers.length * 24;
+      const layer = createImageLayer(canvas, file.name, { offset });
+      state.layers.push(layer);
+      state.selectedLayerId = layer.id;
+      refreshScene({ skipRender: false });
+      setStatus(`画像レイヤー「${file.name}」を追加しました。`);
+      return;
+    }
+
+    loadFromCanvas(canvas, file.name);
+    setStatus(`「${file.name}」を読み込みました。`);
+  }
+
+  async function loadImageFiles(files, mode = 'add') {
+    const list = [...(files || [])].filter((file) => file.type.startsWith('image/'));
+    if (!list.length) return;
+    if (mode === 'replace') {
+      await loadImageFile(list[0], 'replace');
+      return;
+    }
+    for (const file of list) {
+      await loadImageFile(file, state.sceneWidth && state.sceneHeight ? 'add' : 'replace');
     }
   }
 
@@ -2668,17 +3340,20 @@
       event.preventDefault();
       dragDepth = 0;
       hideDrop();
-      const file = [...(event.dataTransfer?.files || [])].find((item) => item.type.startsWith('image/'));
-      if (file) loadImageFile(file).catch((error) => setStatus(`エラー: ${error.message}`));
+      const files = [...(event.dataTransfer?.files || [])].filter((item) => item.type.startsWith('image/'));
+      if (files.length) {
+        loadImageFiles(files, state.sceneWidth && state.sceneHeight ? 'add' : 'replace').catch((error) => setStatus(`エラー: ${error.message}`));
+      }
     });
-
 
     window.addEventListener('paste', (event) => {
       const items = [...(event.clipboardData?.items || [])];
-      const imageItem = items.find((item) => item.type.startsWith('image/'));
-      if (imageItem) {
-        const file = imageItem.getAsFile();
-        loadImageFile(file).catch((error) => setStatus(`エラー: ${error.message}`));
+      const files = items
+        .filter((item) => item.type.startsWith('image/'))
+        .map((item) => item.getAsFile())
+        .filter(Boolean);
+      if (files.length) {
+        loadImageFiles(files, state.sceneWidth && state.sceneHeight ? 'add' : 'replace').catch((error) => setStatus(`エラー: ${error.message}`));
       }
     });
   }
@@ -2691,9 +3366,47 @@
 
     els.fileInput.addEventListener('change', (event) => {
       const [file] = event.target.files || [];
-      loadImageFile(file).catch((error) => setStatus(`エラー: ${error.message}`));
+      loadImageFile(file, 'replace').catch((error) => setStatus(`エラー: ${error.message}`));
       event.target.value = '';
     });
+
+    if (els.addImageInput) {
+      els.addImageInput.addEventListener('change', (event) => {
+        loadImageFiles(event.target.files, 'add').catch((error) => setStatus(`エラー: ${error.message}`));
+        event.target.value = '';
+      });
+    }
+
+    if (els.addDrawingLayerBtn) {
+      els.addDrawingLayerBtn.addEventListener('click', () => addDrawingLayer());
+    }
+
+    if (els.selectToolBtn) els.selectToolBtn.addEventListener('click', () => setActiveTool('select'));
+    if (els.brushToolBtn) els.brushToolBtn.addEventListener('click', () => setActiveTool('brush'));
+    if (els.eraserToolBtn) els.eraserToolBtn.addEventListener('click', () => setActiveTool('eraser'));
+
+    if (els.brushColorInput) {
+      els.brushColorInput.addEventListener('input', (event) => {
+        state.brushColor = event.target.value;
+        updateBrushInfo();
+        drawVisiblePreview();
+      });
+    }
+
+    if (els.brushSizeInput) {
+      els.brushSizeInput.addEventListener('input', (event) => {
+        state.brushSize = Math.max(1, parseFloat(event.target.value) || 1);
+        updateBrushInfo();
+        drawVisiblePreview();
+      });
+    }
+
+    if (els.brushOpacityInput) {
+      els.brushOpacityInput.addEventListener('input', (event) => {
+        state.brushOpacity = Math.min(1, Math.max(0.01, parseFloat(event.target.value) || 1));
+        updateBrushInfo();
+      });
+    }
 
     els.addFilterBtn.addEventListener('click', () => addFilter(els.filterSelect.value));
 
@@ -2713,7 +3426,8 @@
 
     els.previewQualitySelect.addEventListener('change', (event) => {
       state.previewQuality = parseFloat(event.target.value) || 1;
-      if (state.fullOriginal) {
+      if (state.sceneWidth && state.sceneHeight) {
+        composeSceneToSourceCanvas({ readFull: false });
         rebuildPreviewFromSource();
         state.previewProcessed = cloneImageData(state.previewOriginal);
         drawVisiblePreview();
@@ -2731,6 +3445,12 @@
       drawVisiblePreview();
     });
 
+    els.previewCanvas.addEventListener('pointerdown', handleCanvasPointerDown);
+    els.previewCanvas.addEventListener('pointermove', handleCanvasPointerMove);
+    els.previewCanvas.addEventListener('pointerup', finishCanvasInteraction);
+    els.previewCanvas.addEventListener('pointercancel', finishCanvasInteraction);
+    els.previewCanvas.addEventListener('pointerleave', handleCanvasPointerLeave);
+
     els.exportPngBtn.addEventListener('click', () => exportImage('image/png').catch((error) => setStatus(`エラー: ${error.message}`)));
     els.exportJpegBtn.addEventListener('click', () => exportImage('image/jpeg').catch((error) => setStatus(`エラー: ${error.message}`)));
   }
@@ -2739,10 +3459,13 @@
     populateFilterSelect();
     renderPresetButtons();
     renderStack();
+    renderLayerList();
     bindEvents();
     handleDropEvents();
+    updateBrushInfo();
     loadFromCanvas(generateSampleCanvas(), 'sample');
-    setStatus('サンプル画像を読み込みました。画像を差し替えて使えます。');
+    setActiveTool('select');
+    setStatus('サンプル画像を読み込みました。画像を追加し、ドラッグ配置やお絵かきができます。');
   }
 
   init();

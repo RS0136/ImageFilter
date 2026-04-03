@@ -5,11 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Open Filter Studio</title>
   <meta name="description" content="ログイン不要で使える、GitHub Pages対応の画像フィルター実験アプリ" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' blob: data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'" />
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
   <div class="app-shell">
-    <header class="topbar">
+    <header class="topbar card">
       <div>
         <h1>Open Filter Studio</h1>
         <p class="subtitle">権利的に安全な自前実装だけで構成した、GitHub Pages対応の画像フィルター実験アプリ</p>
@@ -20,6 +21,11 @@
           画像を開く
           <input id="fileInput" type="file" accept="image/*" hidden />
         </label>
+        <label class="button-like secondary">
+          画像を追加
+          <input id="addImageInput" type="file" accept="image/*" multiple hidden />
+        </label>
+        <button id="addDrawingLayerBtn" class="secondary">描画レイヤー追加</button>
         <button id="resetStackBtn" class="secondary">フィルターを空にする</button>
         <button id="exportPngBtn">PNG書き出し</button>
         <button id="exportJpegBtn">JPEG書き出し</button>
@@ -46,6 +52,30 @@
           <input id="compareSlider" type="range" min="0" max="100" value="50" />
         </label>
       </div>
+      <div class="toolbar-group tool-group">
+        <span class="field-label">編集ツール</span>
+        <div class="tool-buttons">
+          <button id="selectToolBtn" class="secondary small active">選択</button>
+          <button id="brushToolBtn" class="secondary small">ブラシ</button>
+          <button id="eraserToolBtn" class="secondary small">消しゴム</button>
+        </div>
+        <div class="brush-grid">
+          <label>
+            色
+            <input id="brushColorInput" type="color" value="#ff2d55" />
+          </label>
+          <label>
+            サイズ
+            <input id="brushSizeInput" type="range" min="1" max="160" step="1" value="28" />
+            <span id="brushSizeValue" class="mini-value">28 px</span>
+          </label>
+          <label>
+            不透明度
+            <input id="brushOpacityInput" type="range" min="0.05" max="1" step="0.01" value="0.85" />
+            <span id="brushOpacityValue" class="mini-value">85%</span>
+          </label>
+        </div>
+      </div>
       <div class="toolbar-group status-group">
         <div id="imageInfo">画像未読み込み</div>
         <div id="statusText">サンプル画像を読み込むか、画像をドロップしてください。</div>
@@ -66,13 +96,13 @@
           <p class="muted">補正・ぼかし・効果・変形をまとめて収録しています。</p>
         </section>
         <section>
-          <h2>使い方</h2>
+          <h2>編集のコツ</h2>
           <ol class="help-list">
-            <li>画像を読み込みます。</li>
-            <li>左でフィルターを追加します。</li>
-            <li>右で順序とパラメータを調整します。</li>
-            <li>比較表示で元画像との差を確認します。</li>
-            <li>PNG または JPEG で書き出します。</li>
+            <li>「画像を開く」でベース画像を読み込みます。</li>
+            <li>「画像を追加」で新しい画像レイヤーを重ねます。</li>
+            <li>選択ツールで画像をドラッグ移動できます。</li>
+            <li>ブラシ / 消しゴムは選択中の描画レイヤーに作用します。</li>
+            <li>右側のレイヤーパネルで前面・背面・回転・拡大率を調整できます。</li>
           </ol>
         </section>
       </aside>
@@ -81,7 +111,7 @@
         <div id="dropZone" class="drop-zone">
           <div class="drop-zone-inner">
             <strong>ここへ画像をドロップ</strong>
-            <span>ペーストにも対応</span>
+            <span>複数ファイル・ペーストにも対応</span>
           </div>
         </div>
         <div class="preview-header">
@@ -91,14 +121,23 @@
         <div class="canvas-wrap">
           <canvas id="previewCanvas"></canvas>
         </div>
+        <p class="muted small-note">この実装では画像処理はブラウザ内で完結し、ページ側から外部送信しません。</p>
       </section>
 
       <aside class="sidebar card right-sidebar">
-        <div class="stack-header-row">
-          <h2>フィルタースタック</h2>
-          <button id="clearStackBtn" class="secondary small">全部削除</button>
-        </div>
-        <div id="stackList" class="stack-list"></div>
+        <section>
+          <div class="stack-header-row">
+            <h2>レイヤー</h2>
+          </div>
+          <div id="layerList" class="layer-list"></div>
+        </section>
+        <section>
+          <div class="stack-header-row">
+            <h2>フィルタースタック</h2>
+            <button id="clearStackBtn" class="secondary small">全部削除</button>
+          </div>
+          <div id="stackList" class="stack-list"></div>
+        </section>
       </aside>
     </main>
 
