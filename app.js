@@ -28,13 +28,13 @@
     selectToolBtn: $('#selectToolBtn'),
     brushToolBtn: $('#brushToolBtn'),
     eraserToolBtn: $('#eraserToolBtn'),
-    brushPresetSelect: $('#brushPresetSelect'),
-    eraserPresetSelect: $('#eraserPresetSelect'),
     brushColorInput: $('#brushColorInput'),
     brushSizeInput: $('#brushSizeInput'),
     brushOpacityInput: $('#brushOpacityInput'),
+    brushSoftnessInput: $('#brushSoftnessInput'),
     brushSizeValue: $('#brushSizeValue'),
-    brushOpacityValue: $('#brushOpacityValue')
+    brushOpacityValue: $('#brushOpacityValue'),
+    brushSoftnessValue: $('#brushSoftnessValue')
   };
 
   const previewCtx = els.previewCanvas.getContext('2d', { willReadFrequently: true });
@@ -65,10 +65,10 @@
     selectedLayerId: null,
     activeTool: 'select',
     brushColor: '#ff2d55',
-    brushPreset: 'hardRound',
-    eraserPreset: 'softRound',
     brushSize: 28,
     brushOpacity: 0.85,
+    brushSoftness: 0.35,
+    brushStampCache: null,
     pointerState: {
       down: false,
       mode: null,
@@ -79,9 +79,7 @@
       originX: 0,
       originY: 0,
       lastSceneX: 0,
-      lastSceneY: 0,
-      strokeCarry: 0,
-      lastAngle: -Math.PI / 4
+      lastSceneY: 0
     },
     hoverSceneX: null,
     hoverSceneY: null
@@ -187,14 +185,83 @@
     els.previewCanvas.style.cursor = 'crosshair';
   }
 
+  function getBrushRadius() {
+    return Math.max(0.5, state.brushSize / 2);
+  }
+
+  function getBrushCoreRadius(radius = getBrushRadius(), softness = clamp(state.brushSoftness, 0, 1)) {
+    return Math.max(0, radius * (1 - softness));
+  }
+
+  function getBrushStamp() {
+    const radius = getBrushRadius();
+    const softness = clamp(state.brushSoftness, 0, 1);
+    const tool = state.activeTool === 'eraser' ? 'eraser' : 'brush';
+    const color = tool === 'eraser' ? '#ffffff' : state.brushColor;
+    const key = `${tool}|${color}|${state.brushSize.toFixed(2)}|${softness.toFixed(3)}`;
+
+    if (state.brushStampCache && state.brushStampCache.key === key) return state.brushStampCache;
+
+    const coreRadius = getBrushCoreRadius(radius, softness);
+    const padding = Math.max(2, Math.ceil(radius * softness + 2));
+    const stampRadius = Math.ceil(radius + padding);
+    const stampSize = Math.max(2, stampRadius * 2);
+    const canvas = makeCanvas(stampSize, stampSize);
+    const ctx = canvas.getContext('2d');
+    const center = stampSize / 2;
+    const [r, g, b] = tool === 'eraser' ? [255, 255, 255] : parseHexColor(color);
+
+    if (softness <= 0.001) {
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.arc(center, center, radius, 0, Math.PI * 2);
+      ctx.fill();
+    } else {
+      const gradient = ctx.createRadialGradient(center, center, Math.max(0, coreRadius), center, center, radius);
+      const solidStop = Math.min(0.999, coreRadius / Math.max(radius, 0.0001));
+      gradient.addColorStop(0, rgbaString(r, g, b, 1));
+      if (coreRadius > 0) gradient.addColorStop(solidStop, rgbaString(r, g, b, 1));
+      gradient.addColorStop(1, rgbaString(r, g, b, 0));
+      ctx.fillStyle = gradient;
+      ctx.beginPath();
+      ctx.arc(center, center, radius, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    state.brushStampCache = {
+      key,
+      canvas,
+      center,
+      drawRadius: radius,
+      coreRadius,
+      softness
+    };
+    return state.brushStampCache;
+  }
+
+  function stampBrushStroke(ctx, stamp, fromX, fromY, toX, toY) {
+    const dx = toX - fromX;
+    const dy = toY - fromY;
+    const distance = Math.hypot(dx, dy);
+    const step = Math.max(0.75, Math.min(12, stamp.drawRadius * 0.2));
+    const steps = distance < 0.001 ? 0 : Math.max(1, Math.ceil(distance / step));
+
+    for (let i = 0; i <= steps; i += 1) {
+      const t = steps === 0 ? 0 : i / steps;
+      const x = lerp(fromX, toX, t);
+      const y = lerp(fromY, toY, t);
+      ctx.drawImage(stamp.canvas, x - stamp.center, y - stamp.center);
+    }
+  }
+
   function updateBrushInfo() {
-    if (els.brushPresetSelect) els.brushPresetSelect.value = state.brushPreset;
-    if (els.eraserPresetSelect) els.eraserPresetSelect.value = state.eraserPreset;
     if (els.brushSizeInput) els.brushSizeInput.value = state.brushSize;
     if (els.brushOpacityInput) els.brushOpacityInput.value = state.brushOpacity;
+    if (els.brushSoftnessInput) els.brushSoftnessInput.value = state.brushSoftness;
     if (els.brushColorInput) els.brushColorInput.value = state.brushColor;
     if (els.brushSizeValue) els.brushSizeValue.textContent = `${Math.round(state.brushSize)} px`;
     if (els.brushOpacityValue) els.brushOpacityValue.textContent = `${Math.round(state.brushOpacity * 100)}%`;
+    if (els.brushSoftnessValue) els.brushSoftnessValue.textContent = `${Math.round(state.brushSoftness * 100)}%`;
   }
 
   function setActiveTool(tool) {
@@ -265,251 +332,8 @@
     ];
   }
 
-  const TAU = Math.PI * 2;
-
-  function rgbaString(rgb, alpha = 1) {
-    const safeAlpha = Math.min(1, Math.max(0, alpha));
-    return `rgba(${Math.round(clamp(rgb[0], 0, 255))}, ${Math.round(clamp(rgb[1], 0, 255))}, ${Math.round(clamp(rgb[2], 0, 255))}, ${safeAlpha})`;
-  }
-
-  function fillRoundedRect(ctx, x, y, width, height, radius) {
-    const safeRadius = Math.max(0, Math.min(radius, Math.min(width, height) / 2));
-    ctx.beginPath();
-    if (typeof ctx.roundRect === 'function') {
-      ctx.roundRect(x, y, width, height, safeRadius);
-    } else {
-      ctx.moveTo(x + safeRadius, y);
-      ctx.lineTo(x + width - safeRadius, y);
-      ctx.quadraticCurveTo(x + width, y, x + width, y + safeRadius);
-      ctx.lineTo(x + width, y + height - safeRadius);
-      ctx.quadraticCurveTo(x + width, y + height, x + width - safeRadius, y + height);
-      ctx.lineTo(x + safeRadius, y + height);
-      ctx.quadraticCurveTo(x, y + height, x, y + height - safeRadius);
-      ctx.lineTo(x, y + safeRadius);
-      ctx.quadraticCurveTo(x, y, x + safeRadius, y);
-      ctx.closePath();
-    }
-  }
-
-  function drawRotatedRectStamp(ctx, x, y, width, height, angle, fillStyle, radius = 0) {
-    ctx.save();
-    ctx.translate(x, y);
-    ctx.rotate(angle || 0);
-    ctx.fillStyle = fillStyle;
-    if (radius > 0) {
-      fillRoundedRect(ctx, -width / 2, -height / 2, width, height, radius);
-      ctx.fill();
-    } else {
-      ctx.fillRect(-width / 2, -height / 2, width, height);
-    }
-    ctx.restore();
-  }
-
-  function drawSoftCircleStamp(ctx, x, y, radius, rgb, opacity, innerRatio = 0.16) {
-    const gradient = ctx.createRadialGradient(x, y, radius * innerRatio, x, y, radius);
-    gradient.addColorStop(0, rgbaString(rgb, opacity));
-    gradient.addColorStop(0.38, rgbaString(rgb, opacity * 0.82));
-    gradient.addColorStop(0.75, rgbaString(rgb, opacity * 0.24));
-    gradient.addColorStop(1, rgbaString(rgb, 0));
-    ctx.fillStyle = gradient;
-    ctx.beginPath();
-    ctx.arc(x, y, radius, 0, TAU);
-    ctx.fill();
-  }
-
-  function drawScatterDotsStamp(ctx, x, y, radius, rgb, opacity, options = {}) {
-    const density = options.density === undefined ? 1 : options.density;
-    const dotScale = options.dotScale === undefined ? 0.12 : options.dotScale;
-    const spread = options.spread === undefined ? 1 : options.spread;
-    const centerBias = options.centerBias === undefined ? 1.3 : options.centerBias;
-    const alphaScale = options.alphaScale === undefined ? 0.18 : options.alphaScale;
-    const dots = Math.max(10, Math.round(radius * radius * 0.12 * density));
-    const maxRadius = Math.max(radius * spread, 1);
-
-    for (let i = 0; i < dots; i += 1) {
-      const angle = Math.random() * TAU;
-      const dist = Math.pow(Math.random(), centerBias) * maxRadius;
-      const px = x + Math.cos(angle) * dist;
-      const py = y + Math.sin(angle) * dist;
-      const dotRadius = Math.max(0.7, radius * dotScale * (0.35 + Math.random() * 0.9));
-      const alpha = opacity * alphaScale * (0.35 + Math.random() * 0.65) * (1 - dist / maxRadius);
-      ctx.fillStyle = rgbaString(rgb, alpha);
-      ctx.beginPath();
-      ctx.arc(px, py, dotRadius, 0, TAU);
-      ctx.fill();
-    }
-  }
-
-  function drawChalkStamp(ctx, x, y, size, rgb, opacity, angle = 0, options = {}) {
-    const radius = size / 2;
-    const density = options.density === undefined ? 1 : options.density;
-    const particles = Math.max(12, Math.round(size * 0.55 * density));
-    for (let i = 0; i < particles; i += 1) {
-      const dist = Math.random() * radius;
-      const theta = angle + (Math.random() - 0.5) * 1.8;
-      const px = x + Math.cos(theta) * dist + (Math.random() - 0.5) * radius * 0.35;
-      const py = y + Math.sin(theta) * dist + (Math.random() - 0.5) * radius * 0.35;
-      const width = Math.max(1, size * 0.17 * (0.22 + Math.random() * 0.9));
-      const height = Math.max(1, size * 0.06 * (0.22 + Math.random() * 0.9));
-      const alpha = opacity * 0.17 * (0.4 + Math.random() * 0.8);
-      drawRotatedRectStamp(ctx, px, py, width, height, angle + (Math.random() - 0.5) * 1.1, rgbaString(rgb, alpha));
-    }
-    ctx.fillStyle = rgbaString(rgb, opacity * 0.08);
-    ctx.beginPath();
-    ctx.arc(x, y, Math.max(1, radius * 0.2), 0, TAU);
-    ctx.fill();
-  }
-
-  function drawPixelStamp(ctx, x, y, size, rgb, opacity, cellSize = Math.max(1, Math.round(size / 5))) {
-    const safeCell = Math.max(1, Math.round(cellSize));
-    const blocks = Math.max(1, Math.round(size / safeCell));
-    const side = blocks * safeCell;
-    const left = Math.round((x - side / 2) / safeCell) * safeCell;
-    const top = Math.round((y - side / 2) / safeCell) * safeCell;
-    ctx.fillStyle = rgbaString(rgb, opacity);
-    ctx.fillRect(left, top, side, side);
-  }
-
-  const PAINT_PRESETS = {
-    brush: {
-      hardRound: {
-        label: 'ハード丸',
-        cursor: 'circle',
-        spacing: 0.12,
-        stamp(ctx, x, y, size, meta) {
-          ctx.fillStyle = rgbaString(meta.rgb, meta.opacity);
-          ctx.beginPath();
-          ctx.arc(x, y, size / 2, 0, TAU);
-          ctx.fill();
-        }
-      },
-      softRound: {
-        label: 'ソフト丸',
-        cursor: 'circle',
-        spacing: 0.1,
-        stamp(ctx, x, y, size, meta) {
-          drawSoftCircleStamp(ctx, x, y, size / 2, meta.rgb, meta.opacity, 0.14);
-        }
-      },
-      square: {
-        label: 'スクエア',
-        cursor: 'square',
-        spacing: 0.1,
-        stamp(ctx, x, y, size, meta) {
-          drawRotatedRectStamp(ctx, x, y, size, size, 0, rgbaString(meta.rgb, meta.opacity), Math.max(1, size * 0.08));
-        }
-      },
-      calligraphy: {
-        label: 'カリグラフィ',
-        cursor: 'calligraphy',
-        spacing: 0.08,
-        stamp(ctx, x, y, size, meta) {
-          const angle = (meta.strokeAngle || 0) * 0.35 - Math.PI / 4;
-          drawRotatedRectStamp(ctx, x, y, size * 0.44, size * 1.08, angle, rgbaString(meta.rgb, meta.opacity), Math.max(1, size * 0.11));
-        }
-      },
-      marker: {
-        label: 'マーカー',
-        cursor: 'marker',
-        spacing: 0.08,
-        stamp(ctx, x, y, size, meta) {
-          const angle = meta.strokeAngle || 0;
-          drawRotatedRectStamp(ctx, x, y, size * 0.98, size * 0.54, angle, rgbaString(meta.rgb, meta.opacity * 0.72), Math.max(1, size * 0.22));
-          drawRotatedRectStamp(ctx, x, y, size * 0.76, size * 0.32, angle, rgbaString(meta.rgb, meta.opacity * 0.42), Math.max(1, size * 0.16));
-        }
-      },
-      airbrush: {
-        label: 'エアブラシ',
-        cursor: 'spray',
-        spacing: 0.05,
-        stamp(ctx, x, y, size, meta) {
-          drawScatterDotsStamp(ctx, x, y, size / 2, meta.rgb, meta.opacity, {
-            density: 1,
-            dotScale: 0.12,
-            centerBias: 1.7,
-            spread: 1,
-            alphaScale: 0.19
-          });
-        }
-      },
-      chalk: {
-        label: 'チョーク',
-        cursor: 'spray',
-        spacing: 0.11,
-        stamp(ctx, x, y, size, meta) {
-          drawChalkStamp(ctx, x, y, size, meta.rgb, meta.opacity, meta.strokeAngle || 0, { density: 1.05 });
-        }
-      },
-      pixel: {
-        label: 'ピクセル',
-        cursor: 'pixel',
-        spacing: 0.22,
-        stamp(ctx, x, y, size, meta) {
-          drawPixelStamp(ctx, x, y, size, meta.rgb, meta.opacity);
-        }
-      }
-    },
-    eraser: {
-      hardRound: {
-        label: 'ハード丸',
-        cursor: 'circle',
-        spacing: 0.12,
-        stamp(ctx, x, y, size, meta) {
-          ctx.fillStyle = rgbaString(meta.rgb, meta.opacity);
-          ctx.beginPath();
-          ctx.arc(x, y, size / 2, 0, TAU);
-          ctx.fill();
-        }
-      },
-      softRound: {
-        label: 'ソフト丸',
-        cursor: 'circle',
-        spacing: 0.1,
-        stamp(ctx, x, y, size, meta) {
-          drawSoftCircleStamp(ctx, x, y, size / 2, meta.rgb, meta.opacity, 0.1);
-        }
-      },
-      block: {
-        label: 'ブロック',
-        cursor: 'square',
-        spacing: 0.1,
-        stamp(ctx, x, y, size, meta) {
-          drawRotatedRectStamp(ctx, x, y, size, size, 0, rgbaString(meta.rgb, meta.opacity));
-        }
-      },
-      spray: {
-        label: 'スプレー',
-        cursor: 'spray',
-        spacing: 0.06,
-        stamp(ctx, x, y, size, meta) {
-          drawScatterDotsStamp(ctx, x, y, size / 2, meta.rgb, meta.opacity, {
-            density: 1.1,
-            dotScale: 0.13,
-            centerBias: 1.05,
-            spread: 1.12,
-            alphaScale: 0.23
-          });
-        }
-      },
-      textured: {
-        label: 'テクスチャ',
-        cursor: 'spray',
-        spacing: 0.12,
-        stamp(ctx, x, y, size, meta) {
-          drawChalkStamp(ctx, x, y, size, meta.rgb, meta.opacity, meta.strokeAngle || 0, { density: 0.95 });
-        }
-      }
-    }
-  };
-
-  function getPresetCatalog(tool = state.activeTool) {
-    return tool === 'eraser' ? PAINT_PRESETS.eraser : PAINT_PRESETS.brush;
-  }
-
-  function getActivePaintPreset(tool = state.activeTool) {
-    const catalog = getPresetCatalog(tool);
-    const key = tool === 'eraser' ? state.eraserPreset : state.brushPreset;
-    return catalog[key] || Object.values(catalog)[0];
+  function rgbaString(r, g, b, a = 1) {
+    return `rgba(${Math.round(r)}, ${Math.round(g)}, ${Math.round(b)}, ${clamp(a, 0, 1)})`;
   }
 
   function hash2D(x, y, seed = 0) {
@@ -3067,63 +2891,9 @@
     }));
   }
 
-  function drawPaintCursorOutline(sceneX, sceneY) {
-    const preset = getActivePaintPreset();
-    const px = sceneX * state.previewScale;
-    const py = sceneY * state.previewScale;
-    const scale = state.previewScale;
-    const radius = (state.brushSize / 2) * scale;
-    const baseStroke = state.activeTool === 'eraser' ? 'rgba(255, 255, 255, 0.95)' : 'rgba(255, 120, 160, 0.95)';
-    const angle = Number.isFinite(state.pointerState.lastAngle) ? state.pointerState.lastAngle : -Math.PI / 4;
-
-    previewCtx.save();
-    previewCtx.strokeStyle = baseStroke;
-    previewCtx.lineWidth = 1.5;
-
-    switch (preset.cursor) {
-      case 'square':
-      case 'pixel':
-        previewCtx.strokeRect(px - radius, py - radius, radius * 2, radius * 2);
-        break;
-      case 'calligraphy': {
-        previewCtx.translate(px, py);
-        previewCtx.rotate(angle * 0.35 - Math.PI / 4);
-        previewCtx.strokeRect(-(state.brushSize * 0.44 * scale) / 2, -(state.brushSize * 1.08 * scale) / 2, state.brushSize * 0.44 * scale, state.brushSize * 1.08 * scale);
-        break;
-      }
-      case 'marker': {
-        previewCtx.translate(px, py);
-        previewCtx.rotate(angle);
-        previewCtx.strokeRect(-(state.brushSize * 0.98 * scale) / 2, -(state.brushSize * 0.54 * scale) / 2, state.brushSize * 0.98 * scale, state.brushSize * 0.54 * scale);
-        break;
-      }
-      case 'spray':
-        previewCtx.setLineDash([4, 5]);
-        previewCtx.beginPath();
-        previewCtx.arc(px, py, radius, 0, TAU);
-        previewCtx.stroke();
-        previewCtx.setLineDash([]);
-        previewCtx.fillStyle = baseStroke;
-        for (let i = 0; i < 6; i += 1) {
-          const theta = (i / 6) * TAU + Math.PI / 12;
-          previewCtx.beginPath();
-          previewCtx.arc(px + Math.cos(theta) * radius * 0.55, py + Math.sin(theta) * radius * 0.55, Math.max(1, radius * 0.08), 0, TAU);
-          previewCtx.fill();
-        }
-        break;
-      default:
-        previewCtx.beginPath();
-        previewCtx.arc(px, py, radius, 0, TAU);
-        previewCtx.stroke();
-        break;
-    }
-
-    previewCtx.restore();
-  }
-
   function drawEditorOverlay() {
     const selected = getSelectedLayer();
-    if (selected && state.previewScale && (state.activeTool === 'select' || selected.type === 'image')) {
+    if (selected && state.previewScale) {
       const points = getLayerPreviewCorners(selected);
       previewCtx.save();
       previewCtx.strokeStyle = 'rgba(80, 200, 255, 0.95)';
@@ -3143,7 +2913,25 @@
     }
 
     if ((state.activeTool === 'brush' || state.activeTool === 'eraser') && state.hoverSceneX !== null && state.hoverSceneY !== null) {
-      drawPaintCursorOutline(state.hoverSceneX, state.hoverSceneY);
+      previewCtx.save();
+      const cx = state.hoverSceneX * state.previewScale;
+      const cy = state.hoverSceneY * state.previewScale;
+      const outerRadius = getBrushRadius() * state.previewScale;
+      const coreRadius = getBrushCoreRadius() * state.previewScale;
+      const accent = state.activeTool === 'eraser' ? 'rgba(255, 255, 255, 0.95)' : 'rgba(255, 120, 160, 0.95)';
+      previewCtx.strokeStyle = accent;
+      previewCtx.lineWidth = 1.5;
+      previewCtx.beginPath();
+      previewCtx.arc(cx, cy, outerRadius, 0, Math.PI * 2);
+      previewCtx.stroke();
+      if (state.brushSoftness > 0.01 && coreRadius > 0.75 && coreRadius < outerRadius - 0.75) {
+        previewCtx.strokeStyle = state.activeTool === 'eraser' ? 'rgba(255, 255, 255, 0.45)' : 'rgba(255, 120, 160, 0.45)';
+        previewCtx.setLineDash([6, 5]);
+        previewCtx.beginPath();
+        previewCtx.arc(cx, cy, coreRadius, 0, Math.PI * 2);
+        previewCtx.stroke();
+      }
+      previewCtx.restore();
     }
   }
 
@@ -3191,43 +2979,23 @@
     return null;
   }
 
-  function paintToLayer(layer, fromX, fromY, toX, toY, options = {}) {
+  function paintToLayer(layer, fromX, fromY, toX, toY) {
     const ctx = layer.canvas.getContext('2d', { willReadFrequently: true });
-    const preset = getActivePaintPreset();
-    const rgb = state.activeTool === 'eraser' ? [0, 0, 0] : parseHexColor(state.brushColor);
-    const dx = toX - fromX;
-    const dy = toY - fromY;
-    const distance = Math.hypot(dx, dy);
-    const angle = distance > 0.001 ? Math.atan2(dy, dx) : state.pointerState.lastAngle;
-    const spacing = Math.max(0.75, state.brushSize * (preset.spacing || 0.1));
-    const meta = {
-      tool: state.activeTool,
-      rgb,
-      color: state.brushColor,
-      opacity: state.brushOpacity,
-      strokeAngle: angle
-    };
+    const stamp = getBrushStamp();
+    const padding = stamp.center + 2;
+    const left = Math.floor(Math.min(fromX, toX) - padding);
+    const top = Math.floor(Math.min(fromY, toY) - padding);
+    const right = Math.ceil(Math.max(fromX, toX) + padding);
+    const bottom = Math.ceil(Math.max(fromY, toY) + padding);
+    const tempCanvas = makeCanvas(Math.max(1, right - left), Math.max(1, bottom - top));
+    const tempCtx = tempCanvas.getContext('2d');
+
+    stampBrushStroke(tempCtx, stamp, fromX - left, fromY - top, toX - left, toY - top);
 
     ctx.save();
+    ctx.globalAlpha = state.brushOpacity;
     ctx.globalCompositeOperation = state.activeTool === 'eraser' ? 'destination-out' : 'source-over';
-
-    if (distance < 0.001) {
-      preset.stamp(ctx, toX, toY, state.brushSize, meta);
-      state.pointerState.strokeCarry = spacing;
-      state.pointerState.lastAngle = angle;
-      ctx.restore();
-      return;
-    }
-
-    let nextDistance = options.forceFirstStamp ? 0 : Math.max(0, state.pointerState.strokeCarry || 0);
-    while (nextDistance <= distance) {
-      const t = nextDistance / distance;
-      preset.stamp(ctx, lerp(fromX, toX, t), lerp(fromY, toY, t), state.brushSize, meta);
-      nextDistance += spacing;
-    }
-
-    state.pointerState.strokeCarry = nextDistance - distance;
-    state.pointerState.lastAngle = angle;
+    ctx.drawImage(tempCanvas, left, top);
     ctx.restore();
   }
 
@@ -3264,9 +3032,7 @@
     state.pointerState.pointerId = event.pointerId;
     state.pointerState.lastSceneX = pos.sceneX;
     state.pointerState.lastSceneY = pos.sceneY;
-    state.pointerState.strokeCarry = 0;
-    state.pointerState.lastAngle = -Math.PI / 4;
-    paintToLayer(layer, pos.sceneX, pos.sceneY, pos.sceneX, pos.sceneY, { forceFirstStamp: true });
+    paintToLayer(layer, pos.sceneX, pos.sceneY, pos.sceneX, pos.sceneY);
     refreshScene({ interactive: true, skipLayerRender: true });
     els.previewCanvas.setPointerCapture(event.pointerId);
   }
@@ -3307,7 +3073,6 @@
     state.pointerState.mode = null;
     state.pointerState.layerId = null;
     state.pointerState.pointerId = null;
-    state.pointerState.strokeCarry = 0;
     refreshScene({ skipRender: false });
     updateEditorCursor();
   }
@@ -3701,22 +3466,6 @@
     if (els.brushToolBtn) els.brushToolBtn.addEventListener('click', () => setActiveTool('brush'));
     if (els.eraserToolBtn) els.eraserToolBtn.addEventListener('click', () => setActiveTool('eraser'));
 
-    if (els.brushPresetSelect) {
-      els.brushPresetSelect.addEventListener('change', (event) => {
-        state.brushPreset = event.target.value;
-        updateBrushInfo();
-        drawVisiblePreview();
-      });
-    }
-
-    if (els.eraserPresetSelect) {
-      els.eraserPresetSelect.addEventListener('change', (event) => {
-        state.eraserPreset = event.target.value;
-        updateBrushInfo();
-        drawVisiblePreview();
-      });
-    }
-
     if (els.brushColorInput) {
       els.brushColorInput.addEventListener('input', (event) => {
         state.brushColor = event.target.value;
@@ -3737,6 +3486,14 @@
       els.brushOpacityInput.addEventListener('input', (event) => {
         state.brushOpacity = Math.min(1, Math.max(0.01, parseFloat(event.target.value) || 1));
         updateBrushInfo();
+      });
+    }
+
+    if (els.brushSoftnessInput) {
+      els.brushSoftnessInput.addEventListener('input', (event) => {
+        state.brushSoftness = Math.min(1, Math.max(0, parseFloat(event.target.value) || 0));
+        updateBrushInfo();
+        drawVisiblePreview();
       });
     }
 

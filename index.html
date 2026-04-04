@@ -61,29 +61,6 @@
         </div>
         <div class="brush-grid">
           <label>
-            ブラシ種類
-            <select id="brushPresetSelect">
-              <option value="hardRound">ハード丸</option>
-              <option value="softRound">ソフト丸</option>
-              <option value="square">スクエア</option>
-              <option value="calligraphy">カリグラフィ</option>
-              <option value="marker">マーカー</option>
-              <option value="airbrush">エアブラシ</option>
-              <option value="chalk">チョーク</option>
-              <option value="pixel">ピクセル</option>
-            </select>
-          </label>
-          <label>
-            消しゴム種類
-            <select id="eraserPresetSelect">
-              <option value="hardRound">ハード丸</option>
-              <option value="softRound">ソフト丸</option>
-              <option value="block">ブロック</option>
-              <option value="spray">スプレー</option>
-              <option value="textured">テクスチャ</option>
-            </select>
-          </label>
-          <label>
             色
             <input id="brushColorInput" type="color" value="#ff2d55" />
           </label>
@@ -96,6 +73,11 @@
             不透明度
             <input id="brushOpacityInput" type="range" min="0.05" max="1" step="0.01" value="0.85" />
             <span id="brushOpacityValue" class="mini-value">85%</span>
+          </label>
+          <label>
+            柔らかさ
+            <input id="brushSoftnessInput" type="range" min="0" max="1" step="0.01" value="0.35" />
+            <span id="brushSoftnessValue" class="mini-value">35%</span>
           </label>
         </div>
       </div>
@@ -124,7 +106,7 @@
             <li>「画像を開く」でベース画像を読み込みます。</li>
             <li>「画像を追加」で新しい画像レイヤーを重ねます。</li>
             <li>選択ツールで画像をドラッグ移動できます。</li>
-            <li>ブラシ / 消しゴムは、選択中の描画レイヤーに対して種類を切り替えて使えます。</li>
+            <li>ブラシ / 消しゴムは選択中の描画レイヤーに作用します。</li>
             <li>右側のレイヤーパネルで前面・背面・回転・拡大率を調整できます。</li>
           </ol>
         </section>
