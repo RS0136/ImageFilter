@@ -189,13 +189,24 @@
     return Math.max(0.5, state.brushSize / 2);
   }
 
-  function getBrushCoreRadius(radius = getBrushRadius(), softness = clamp(state.brushSoftness, 0, 1)) {
-    return Math.max(0, radius * (1 - softness));
+  function invalidateBrushStampCache() {
+    state.brushStampCache = null;
+  }
+
+  function getEffectiveBrushSoftness(softness = state.brushSoftness) {
+    const safe = clamp(softness, 0, 1);
+    return 1 - ((1 - safe) ** 1.45);
+  }
+
+  function getBrushCoreRadius(radius = getBrushRadius(), softness = state.brushSoftness) {
+    const effectiveSoftness = getEffectiveBrushSoftness(softness);
+    return Math.max(0, radius * (1 - effectiveSoftness));
   }
 
   function getBrushStamp() {
     const radius = getBrushRadius();
     const softness = clamp(state.brushSoftness, 0, 1);
+    const effectiveSoftness = getEffectiveBrushSoftness(softness);
     const tool = state.activeTool === 'eraser' ? 'eraser' : 'brush';
     const color = tool === 'eraser' ? '#ffffff' : state.brushColor;
     const key = `${tool}|${color}|${state.brushSize.toFixed(2)}|${softness.toFixed(3)}`;
@@ -203,30 +214,46 @@
     if (state.brushStampCache && state.brushStampCache.key === key) return state.brushStampCache;
 
     const coreRadius = getBrushCoreRadius(radius, softness);
-    const padding = Math.max(2, Math.ceil(radius * softness + 2));
+    const featherRadius = Math.max(0.5, radius - coreRadius);
+    const padding = Math.max(2, Math.ceil(featherRadius + 2));
     const stampRadius = Math.ceil(radius + padding);
     const stampSize = Math.max(2, stampRadius * 2);
     const canvas = makeCanvas(stampSize, stampSize);
-    const ctx = canvas.getContext('2d');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
     const center = stampSize / 2;
     const [r, g, b] = tool === 'eraser' ? [255, 255, 255] : parseHexColor(color);
+    const imageData = ctx.createImageData(stampSize, stampSize);
+    const data = imageData.data;
+    const falloffGamma = lerp(0.75, 2.6, effectiveSoftness);
 
-    if (softness <= 0.001) {
-      ctx.fillStyle = color;
-      ctx.beginPath();
-      ctx.arc(center, center, radius, 0, Math.PI * 2);
-      ctx.fill();
-    } else {
-      const gradient = ctx.createRadialGradient(center, center, Math.max(0, coreRadius), center, center, radius);
-      const solidStop = Math.min(0.999, coreRadius / Math.max(radius, 0.0001));
-      gradient.addColorStop(0, rgbaString(r, g, b, 1));
-      if (coreRadius > 0) gradient.addColorStop(solidStop, rgbaString(r, g, b, 1));
-      gradient.addColorStop(1, rgbaString(r, g, b, 0));
-      ctx.fillStyle = gradient;
-      ctx.beginPath();
-      ctx.arc(center, center, radius, 0, Math.PI * 2);
-      ctx.fill();
+    for (let y = 0; y < stampSize; y += 1) {
+      for (let x = 0; x < stampSize; x += 1) {
+        const dx = (x + 0.5) - center;
+        const dy = (y + 0.5) - center;
+        const distance = Math.hypot(dx, dy);
+        let alpha = 0;
+
+        if (distance <= radius + 0.5) {
+          if (effectiveSoftness <= 0.001) {
+            alpha = clamp(radius + 0.5 - distance, 0, 1);
+          } else if (distance <= coreRadius) {
+            alpha = 1;
+          } else if (distance < radius) {
+            const t = clamp((distance - coreRadius) / Math.max(radius - coreRadius, 0.0001), 0, 1);
+            alpha = Math.pow(1 - smoothstep(0, 1, t), falloffGamma);
+          }
+        }
+
+        if (alpha <= 0.0005) continue;
+        const index = (y * stampSize + x) * 4;
+        data[index] = r;
+        data[index + 1] = g;
+        data[index + 2] = b;
+        data[index + 3] = Math.round(clamp(alpha, 0, 1) * 255);
+      }
     }
+
+    ctx.putImageData(imageData, 0, 0);
 
     state.brushStampCache = {
       key,
@@ -234,7 +261,9 @@
       center,
       drawRadius: radius,
       coreRadius,
-      softness
+      featherRadius,
+      softness,
+      effectiveSoftness
     };
     return state.brushStampCache;
   }
@@ -243,7 +272,14 @@
     const dx = toX - fromX;
     const dy = toY - fromY;
     const distance = Math.hypot(dx, dy);
-    const step = Math.max(0.75, Math.min(12, stamp.drawRadius * 0.2));
+    const softness = clamp(stamp.softness ?? state.brushSoftness, 0, 1);
+    const step = Math.max(
+      0.75,
+      Math.min(
+        stamp.drawRadius * 0.85,
+        lerp(stamp.drawRadius * 0.18, stamp.drawRadius * 0.52, softness)
+      )
+    );
     const steps = distance < 0.001 ? 0 : Math.max(1, Math.ceil(distance / step));
 
     for (let i = 0; i <= steps; i += 1) {
@@ -266,6 +302,7 @@
 
   function setActiveTool(tool) {
     state.activeTool = tool;
+    invalidateBrushStampCache();
     if (els.selectToolBtn) els.selectToolBtn.classList.toggle('active', tool === 'select');
     if (els.brushToolBtn) els.brushToolBtn.classList.toggle('active', tool === 'brush');
     if (els.eraserToolBtn) els.eraserToolBtn.classList.toggle('active', tool === 'eraser');
@@ -3467,34 +3504,45 @@
     if (els.eraserToolBtn) els.eraserToolBtn.addEventListener('click', () => setActiveTool('eraser'));
 
     if (els.brushColorInput) {
-      els.brushColorInput.addEventListener('input', (event) => {
+      const syncBrushColor = (event) => {
         state.brushColor = event.target.value;
+        invalidateBrushStampCache();
         updateBrushInfo();
         drawVisiblePreview();
-      });
+      };
+      els.brushColorInput.addEventListener('input', syncBrushColor);
+      els.brushColorInput.addEventListener('change', syncBrushColor);
     }
 
     if (els.brushSizeInput) {
-      els.brushSizeInput.addEventListener('input', (event) => {
+      const syncBrushSize = (event) => {
         state.brushSize = Math.max(1, parseFloat(event.target.value) || 1);
+        invalidateBrushStampCache();
         updateBrushInfo();
         drawVisiblePreview();
-      });
+      };
+      els.brushSizeInput.addEventListener('input', syncBrushSize);
+      els.brushSizeInput.addEventListener('change', syncBrushSize);
     }
 
     if (els.brushOpacityInput) {
-      els.brushOpacityInput.addEventListener('input', (event) => {
+      const syncBrushOpacity = (event) => {
         state.brushOpacity = Math.min(1, Math.max(0.01, parseFloat(event.target.value) || 1));
         updateBrushInfo();
-      });
+      };
+      els.brushOpacityInput.addEventListener('input', syncBrushOpacity);
+      els.brushOpacityInput.addEventListener('change', syncBrushOpacity);
     }
 
     if (els.brushSoftnessInput) {
-      els.brushSoftnessInput.addEventListener('input', (event) => {
+      const syncBrushSoftness = (event) => {
         state.brushSoftness = Math.min(1, Math.max(0, parseFloat(event.target.value) || 0));
+        invalidateBrushStampCache();
         updateBrushInfo();
         drawVisiblePreview();
-      });
+      };
+      els.brushSoftnessInput.addEventListener('input', syncBrushSoftness);
+      els.brushSoftnessInput.addEventListener('change', syncBrushSoftness);
     }
 
     els.addFilterBtn.addEventListener('click', () => addFilter(els.filterSelect.value));
