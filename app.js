@@ -24,6 +24,7 @@
     stackList: $('#stackList'),
     clearStackBtn: $('#clearStackBtn'),
     filterCountBadge: $('#filterCountBadge'),
+    stackTargetText: $('#stackTargetText'),
     layerList: $('#layerList'),
     selectToolBtn: $('#selectToolBtn'),
     brushToolBtn: $('#brushToolBtn'),
@@ -40,7 +41,6 @@
   const previewCtx = els.previewCanvas.getContext('2d', { willReadFrequently: true });
 
   const state = {
-    stack: [],
     imageName: 'sample',
     fullOriginal: null,
     previewOriginal: null,
@@ -117,6 +117,59 @@
     return getLayerById(state.selectedLayerId);
   }
 
+  function ensureLayerFilters(layer) {
+    if (!layer) return [];
+    if (!Array.isArray(layer.filters)) layer.filters = [];
+    return layer.filters;
+  }
+
+  function getActiveFilterLayer() {
+    return getSelectedLayer() || state.layers[state.layers.length - 1] || null;
+  }
+
+  function getActiveFilterStack() {
+    const layer = getActiveFilterLayer();
+    return layer ? ensureLayerFilters(layer) : [];
+  }
+
+  function cloneFilterStack(stack = []) {
+    return stack.map((item) => {
+      const clone = makeFilterInstance(item.key, item.params);
+      clone.enabled = item.enabled !== false;
+      return clone;
+    });
+  }
+
+  function getLayerKindLabel(layer) {
+    return layer?.type === 'drawing' ? '描画' : '画像';
+  }
+
+  function getLayerFilterCount(layer) {
+    return ensureLayerFilters(layer).length;
+  }
+
+  function getEnabledFilterCountForStack(stack = []) {
+    return stack.reduce((count, item) => count + (item.enabled ? 1 : 0), 0);
+  }
+
+  function getTotalLayerFilterCount() {
+    return state.layers.reduce((count, layer) => count + getLayerFilterCount(layer), 0);
+  }
+
+  function getTotalEnabledLayerFilterCount() {
+    return state.layers.reduce((count, layer) => count + getEnabledFilterCountForStack(ensureLayerFilters(layer)), 0);
+  }
+
+  function updateStackTargetText() {
+    if (!els.stackTargetText) return;
+    const layer = getActiveFilterLayer();
+    if (!layer) {
+      els.stackTargetText.textContent = '対象: レイヤー未選択';
+      return;
+    }
+    els.stackTargetText.textContent = `対象: ${layer.name} (${getLayerKindLabel(layer)})`;
+  }
+
   function computeContainScale(width, height, sceneWidth = getSceneWidth(), sceneHeight = getSceneHeight(), fill = 0.72) {
     if (!width || !height || !sceneWidth || !sceneHeight) return 1;
     return Math.min(1, Math.min((sceneWidth * fill) / width, (sceneHeight * fill) / height));
@@ -152,6 +205,7 @@
       y: options.y !== undefined ? options.y : sceneHeight / 2 + offset,
       scale,
       rotation: options.rotation || 0,
+      filters: cloneFilterStack(options.filters || []),
       canvas,
       width: canvas.width,
       height: canvas.height
@@ -170,6 +224,7 @@
       y: getSceneHeight() / 2,
       scale: 1,
       rotation: 0,
+      filters: [],
       canvas,
       width: canvas.width,
       height: canvas.height
@@ -317,6 +372,7 @@
     if (id && !getLayerById(id)) return;
     state.selectedLayerId = id;
     if (!options.skipLayerRender) renderLayerList();
+    if (!options.skipStackRender) renderStack();
     if (!options.skipPreviewDraw) drawVisiblePreview();
   }
 
@@ -341,7 +397,11 @@
   }
 
   function updateFilterCountBadge() {
-    els.filterCountBadge.textContent = `${state.stack.length} filters`;
+    const selectedLayer = getActiveFilterLayer();
+    const selectedCount = selectedLayer ? getLayerFilterCount(selectedLayer) : 0;
+    const totalCount = getTotalLayerFilterCount();
+    els.filterCountBadge.textContent = `選択 ${selectedCount} / 全体 ${totalCount}`;
+    updateStackTargetText();
   }
 
   function cloneImageData(imageData) {
@@ -2423,52 +2483,70 @@
       button.className = 'secondary wide';
       button.innerHTML = `<span>${preset.name}</span><span class="muted">${preset.description}</span>`;
       button.addEventListener('click', () => {
-        state.stack = preset.stack.map((item) => makeFilterInstance(item.key, item.params));
+        const layer = getActiveFilterLayer();
+        if (!layer) {
+          setStatus('先にフィルターを適用するレイヤーを選択してください。');
+          return;
+        }
+        layer.filters = preset.stack.map((item) => makeFilterInstance(item.key, item.params));
+        renderLayerList();
         renderStack();
         scheduleRender();
-        setStatus(`プリセット「${preset.name}」を適用しました。`);
+        setStatus(`レイヤー「${layer.name}」にプリセット「${preset.name}」を適用しました。`);
       });
       els.presetList.appendChild(button);
     });
   }
 
   function addFilter(key) {
-    state.stack.push(makeFilterInstance(key));
+    const layer = getActiveFilterLayer();
+    if (!layer) {
+      setStatus('先にフィルターを適用するレイヤーを選択してください。');
+      return;
+    }
+    ensureLayerFilters(layer).push(makeFilterInstance(key));
+    renderLayerList();
     renderStack();
     scheduleRender();
     const def = FILTER_MAP.get(key);
-    setStatus(`フィルター「${def.name}」を追加しました。`);
+    setStatus(`レイヤー「${layer.name}」へフィルター「${def.name}」を追加しました。`);
   }
 
   function moveFilter(id, direction) {
-    const index = state.stack.findIndex((item) => item.id === id);
+    const stack = getActiveFilterStack();
+    const index = stack.findIndex((item) => item.id === id);
     if (index < 0) return;
     const swapIndex = index + direction;
-    if (swapIndex < 0 || swapIndex >= state.stack.length) return;
-    const temp = state.stack[index];
-    state.stack[index] = state.stack[swapIndex];
-    state.stack[swapIndex] = temp;
+    if (swapIndex < 0 || swapIndex >= stack.length) return;
+    const temp = stack[index];
+    stack[index] = stack[swapIndex];
+    stack[swapIndex] = temp;
     renderStack();
+    renderLayerList();
     scheduleRender();
   }
 
   function removeFilter(id) {
-    state.stack = state.stack.filter((item) => item.id !== id);
+    const layer = getActiveFilterLayer();
+    if (!layer) return;
+    layer.filters = ensureLayerFilters(layer).filter((item) => item.id !== id);
+    renderLayerList();
     renderStack();
     scheduleRender();
   }
 
   function updateFilterParam(id, key, value) {
-    const item = state.stack.find((entry) => entry.id === id);
+    const item = getActiveFilterStack().find((entry) => entry.id === id);
     if (!item) return;
     item.params[key] = value;
     scheduleRender();
   }
 
   function toggleFilter(id, enabled) {
-    const item = state.stack.find((entry) => entry.id === id);
+    const item = getActiveFilterStack().find((entry) => entry.id === id);
     if (!item) return;
     item.enabled = enabled;
+    renderLayerList();
     renderStack();
     scheduleRender();
   }
@@ -2570,15 +2648,25 @@
     els.stackList.innerHTML = '';
     updateFilterCountBadge();
 
-    if (!state.stack.length) {
+    const layer = getActiveFilterLayer();
+    if (!layer) {
       const empty = document.createElement('div');
       empty.className = 'empty-stack';
-      empty.textContent = 'まだフィルターがありません。左側から追加してください。';
+      empty.textContent = 'まだレイヤーがありません。';
       els.stackList.appendChild(empty);
       return;
     }
 
-    state.stack.forEach((item, index) => {
+    const stack = getActiveFilterStack();
+    if (!stack.length) {
+      const empty = document.createElement('div');
+      empty.className = 'empty-stack';
+      empty.textContent = `レイヤー「${layer.name}」にはまだフィルターがありません。左側から追加してください。`;
+      els.stackList.appendChild(empty);
+      return;
+    }
+
+    stack.forEach((item, index) => {
       const def = FILTER_MAP.get(item.key);
       const card = document.createElement('div');
       card.className = `stack-item ${item.enabled ? '' : 'disabled'}`.trim();
@@ -2609,7 +2697,7 @@
       const downBtn = document.createElement('button');
       downBtn.className = 'secondary small';
       downBtn.textContent = '↓';
-      downBtn.disabled = index === state.stack.length - 1;
+      downBtn.disabled = index === stack.length - 1;
       downBtn.addEventListener('click', () => moveFilter(item.id, 1));
       const removeBtn = document.createElement('button');
       removeBtn.className = 'secondary danger small';
@@ -2683,6 +2771,72 @@
     return row;
   }
 
+  function canvasToImageData(canvas) {
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    return ctx.getImageData(0, 0, canvas.width, canvas.height);
+  }
+
+  function imageDataToCanvas(imageData) {
+    const canvas = makeCanvas(imageData.width, imageData.height);
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    ctx.putImageData(imageData, 0, 0);
+    return canvas;
+  }
+
+  function scaleCanvas(sourceCanvas, scale = 1) {
+    const safeScale = Math.max(0.001, scale || 1);
+    if (Math.abs(safeScale - 1) < 0.0001) return sourceCanvas;
+    const canvas = makeCanvas(sourceCanvas.width * safeScale, sourceCanvas.height * safeScale);
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(sourceCanvas, 0, 0, canvas.width, canvas.height);
+    return canvas;
+  }
+
+  async function composeFilteredSceneImageData(options = {}) {
+    if (!state.sceneWidth || !state.sceneHeight) return null;
+    const pixelScale = Math.max(0.001, options.pixelScale || 1);
+    const canvas = makeCanvas(state.sceneWidth * pixelScale, state.sceneHeight * pixelScale);
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    const totalFilters = options.totalFilters ?? getTotalEnabledLayerFilterCount();
+    let processedFilters = 0;
+
+    for (const layer of state.layers) {
+      if (!layer.visible || layer.opacity <= 0) continue;
+      const stack = ensureLayerFilters(layer);
+      const activeCount = getEnabledFilterCountForStack(stack);
+      let renderCanvas = layer.canvas;
+      let compositeScale = (layer.scale || 1) * pixelScale;
+
+      if (activeCount > 0) {
+        const workingCanvas = pixelScale === 1 ? layer.canvas : scaleCanvas(layer.canvas, pixelScale);
+        const workingImage = canvasToImageData(workingCanvas);
+        const processedImage = await applyStack(workingImage, stack, {
+          onProgress: (index, total, name) => {
+            if (options.onProgress) options.onProgress(processedFilters + index, totalFilters, name, layer);
+          }
+        });
+        renderCanvas = imageDataToCanvas(processedImage);
+        compositeScale = layer.scale || 1;
+        processedFilters += activeCount;
+      }
+
+      ctx.save();
+      ctx.globalAlpha = layer.opacity;
+      ctx.translate(layer.x * pixelScale, layer.y * pixelScale);
+      ctx.rotate(degToRad(layer.rotation || 0));
+      ctx.scale(compositeScale, compositeScale);
+      ctx.drawImage(renderCanvas, -renderCanvas.width / 2, -renderCanvas.height / 2);
+      ctx.restore();
+
+      if (options.yieldBetweenLayers) {
+        await nextFrame();
+      }
+    }
+
+    return ctx.getImageData(0, 0, canvas.width, canvas.height);
+  }
+
   function composeSceneToSourceCanvas(options = {}) {
     if (!state.sceneWidth || !state.sceneHeight) return;
     state.sourceCanvas.width = state.sceneWidth;
@@ -2717,6 +2871,7 @@
     }
     if (!options.skipLayerRender) {
       renderLayerList();
+      renderStack();
     }
   }
 
@@ -2839,7 +2994,8 @@
       visibility.append(checkbox, document.createTextNode(layer.name));
       const meta = document.createElement('span');
       meta.className = 'stack-item-meta';
-      meta.textContent = `${layer.type === 'image' ? '画像' : '描画'} / ${layer.width}×${layer.height}`;
+      const filterCount = getLayerFilterCount(layer);
+      meta.textContent = `${getLayerKindLabel(layer)} / ${layer.width}×${layer.height} / フィルター ${filterCount}`;
       titleWrap.append(visibility, meta);
 
       const actions = document.createElement('div');
@@ -3175,9 +3331,9 @@
     drawEditorOverlay();
   }
 
-  async function applyStack(imageData, options = {}) {
+  async function applyStack(imageData, stack = [], options = {}) {
     let working = cloneImageData(imageData);
-    const activeFilters = state.stack.filter((item) => item.enabled);
+    const activeFilters = (stack || []).filter((item) => item.enabled);
     let processed = 0;
     for (const item of activeFilters) {
       const def = FILTER_MAP.get(item.key);
@@ -3211,14 +3367,26 @@
     state.rendering = true;
     state.renderAgain = false;
     const start = performance.now();
-    setStatus('プレビューを処理中...');
+    const totalFilters = getTotalEnabledLayerFilterCount();
+    if (!totalFilters) {
+      state.previewProcessed = cloneImageData(state.previewOriginal);
+      drawVisiblePreview();
+      setStatus(`プレビュー更新完了 (${formatNumber(performance.now() - start, 1)} ms)`);
+      state.rendering = false;
+      if (state.renderAgain) scheduleRender();
+      return;
+    }
+
+    setStatus('レイヤー別フィルターを処理中...');
     await nextFrame();
 
-    const result = await applyStack(state.previewOriginal, {
-      onProgress: (index, total, name) => setStatus(`プレビューを処理中... ${index}/${total} ${name}`)
+    const result = await composeFilteredSceneImageData({
+      pixelScale: state.previewScale || 1,
+      totalFilters,
+      onProgress: (index, total, name, layer) => setStatus(`プレビューを処理中... ${index}/${total} ${layer.name} / ${name}`)
     });
 
-    state.previewProcessed = result;
+    state.previewProcessed = result || cloneImageData(state.previewOriginal);
     drawVisiblePreview();
     const elapsed = performance.now() - start;
     setStatus(`プレビュー更新完了 (${formatNumber(elapsed, 1)} ms)`);
@@ -3236,9 +3404,20 @@
     setStatus(`高解像度の ${type === 'image/png' ? 'PNG' : 'JPEG'} を書き出し中...`);
     await nextFrame();
     const start = performance.now();
-    const result = await applyStack(state.fullOriginal, {
-      onProgress: (index, total, name) => setStatus(`書き出し中... ${index}/${total} ${name}`)
-    });
+    const totalFilters = getTotalEnabledLayerFilterCount();
+    const result = totalFilters
+      ? await composeFilteredSceneImageData({
+        pixelScale: 1,
+        totalFilters,
+        onProgress: (index, total, name, layer) => setStatus(`書き出し中... ${index}/${total} ${layer.name} / ${name}`),
+        yieldBetweenLayers: true
+      })
+      : cloneImageData(state.fullOriginal);
+
+    if (!result) {
+      setStatus('書き出しに失敗しました。');
+      return;
+    }
 
     const tempCanvas = document.createElement('canvas');
     tempCanvas.width = result.width;
@@ -3288,7 +3467,7 @@
     });
     const drawingLayer = createDrawingLayer('お絵かき 1');
     state.layers = [baseLayer, drawingLayer];
-    state.selectedLayerId = drawingLayer.id;
+    state.selectedLayerId = baseLayer.id;
     refreshScene({ skipRender: false });
     setActiveTool(state.activeTool);
   }
@@ -3548,17 +3727,29 @@
     els.addFilterBtn.addEventListener('click', () => addFilter(els.filterSelect.value));
 
     els.clearStackBtn.addEventListener('click', () => {
-      state.stack = [];
+      const layer = getActiveFilterLayer();
+      if (!layer) {
+        setStatus('先にレイヤーを選択してください。');
+        return;
+      }
+      layer.filters = [];
+      renderLayerList();
       renderStack();
       scheduleRender();
-      setStatus('フィルタースタックを空にしました。');
+      setStatus(`レイヤー「${layer.name}」のフィルタースタックを空にしました。`);
     });
 
     els.resetStackBtn.addEventListener('click', () => {
-      state.stack = [];
+      const layer = getActiveFilterLayer();
+      if (!layer) {
+        setStatus('先にレイヤーを選択してください。');
+        return;
+      }
+      layer.filters = [];
+      renderLayerList();
       renderStack();
       scheduleRender();
-      setStatus('フィルタースタックを空にしました。');
+      setStatus(`レイヤー「${layer.name}」のフィルタースタックを空にしました。`);
     });
 
     els.previewQualitySelect.addEventListener('change', (event) => {
@@ -3602,7 +3793,7 @@
     updateBrushInfo();
     loadFromCanvas(generateSampleCanvas(), 'sample');
     setActiveTool('select');
-    setStatus('サンプル画像を読み込みました。画像を追加し、ドラッグ配置やお絵かきができます。');
+    setStatus('サンプル画像を読み込みました。レイヤーごとに別々のフィルターを設定できます。');
   }
 
   init();
